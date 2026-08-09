@@ -13,6 +13,8 @@ import {
   KeyRound,
   Sparkles,
   Eye,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import "./loupe-app-styles.css";
 
@@ -340,13 +342,32 @@ function getCropRect(box_2d, hint, imgWidth, imgHeight) {
 
 function CropPreviewModal({ screenshot, tagLabel, tagHint, box_2d, onClose }) {
   const canvasRef = useRef(null);
+  const containerRef = useRef(null);
   const [viewMode, setViewMode] = useState("crop"); // 'crop' | 'full'
+  const [zoom, setZoom] = useState(1);
+  const [origin, setOrigin] = useState({ x: 50, y: 50 }); // percentage
 
   useEffect(() => {
+    // Disable background scrolling on body while modal is open
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+
+    return () => {
+      // Restore background scrolling when modal closes
+      document.body.style.overflow = originalOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
   }, [onClose]);
+
+  // Reset zoom when switching view modes
+  const handleViewModeChange = (mode) => {
+    setViewMode(mode);
+    setZoom(1);
+    setOrigin({ x: 50, y: 50 });
+  };
 
   useEffect(() => {
     if (!screenshot || !canvasRef.current || viewMode !== "crop") return;
@@ -368,11 +389,69 @@ function CropPreviewModal({ screenshot, tagLabel, tagHint, box_2d, onClose }) {
     };
   }, [screenshot, tagHint, box_2d, viewMode]);
 
+  // Mouse wheel zoom towards cursor location
+  const handleWheel = (e) => {
+    e.preventDefault();
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+    const mouseY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+
+    setOrigin({ x: mouseX, y: mouseY });
+
+    setZoom((prevZoom) => {
+      const delta = e.deltaY < 0 ? 0.25 : -0.25;
+      const nextZoom = Math.min(5, Math.max(1, prevZoom + delta));
+      return parseFloat(nextZoom.toFixed(2));
+    });
+  };
+
+  // Move origin while hovering if zoomed in
+  const handleMouseMove = (e) => {
+    if (zoom <= 1 || !containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+    const mouseY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+    setOrigin({ x: mouseX, y: mouseY });
+  };
+
+  // Click to toggle zoom (1x <-> 2.5x) focused on cursor position
+  const handleClick = (e) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+    const mouseY = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+    setOrigin({ x: mouseX, y: mouseY });
+
+    if (zoom === 1) {
+      setZoom(2.5);
+    } else {
+      setZoom(1);
+    }
+  };
+
+  const handleZoomIn = () => {
+    setZoom((z) => Math.min(5, parseFloat((z + 0.5).toFixed(2))));
+  };
+
+  const handleZoomOut = () => {
+    setZoom((z) => {
+      const nz = Math.max(1, parseFloat((z - 0.5).toFixed(2)));
+      if (nz === 1) setOrigin({ x: 50, y: 50 });
+      return nz;
+    });
+  };
+
+  const handleResetZoom = () => {
+    setZoom(1);
+    setOrigin({ x: 50, y: 50 });
+  };
+
   if (!screenshot) return null;
   const rect = getCropRect(box_2d, tagHint, 1000, 1000);
 
   return (
-    <div className="loupe-crop-modal-backdrop" onClick={onClose}>
+    <div className="loupe-crop-modal-backdrop" onClick={onClose} onWheel={(e) => e.stopPropagation()}>
       <div className="loupe-crop-modal" onClick={(e) => e.stopPropagation()}>
         <div className="loupe-modal-header">
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -384,50 +463,108 @@ function CropPreviewModal({ screenshot, tagLabel, tagHint, box_2d, onClose }) {
             )}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            {/* View mode toggle */}
             <div className="flex bg-slate-900 border border-slate-700/80 rounded-md p-0.5 text-[0.65rem] font-mono">
               <button
-                onClick={() => setViewMode("crop")}
+                onClick={() => handleViewModeChange("crop")}
                 className={`px-2 py-0.5 rounded transition-all ${viewMode === "crop" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"}`}
               >
                 Cropped Area
               </button>
               <button
-                onClick={() => setViewMode("full")}
+                onClick={() => handleViewModeChange("full")}
                 className={`px-2 py-0.5 rounded transition-all ${viewMode === "full" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"}`}
               >
                 Full Screen
               </button>
             </div>
+
+            {/* Zoom Controls Toolbar */}
+            <div className="flex items-center gap-1 bg-slate-900 border border-amber-500/30 rounded-md px-1.5 py-0.5 text-xs text-amber-300 font-mono">
+              <button
+                onClick={handleZoomOut}
+                disabled={zoom <= 1}
+                className="p-1 hover:text-amber-200 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                title="Zoom Out"
+              >
+                <ZoomOut size={12} />
+              </button>
+              <span
+                onClick={handleResetZoom}
+                className="text-[0.65rem] px-1 cursor-pointer hover:text-amber-100 font-bold tracking-tight"
+                title="Click to reset zoom (100%)"
+              >
+                {Math.round(zoom * 100)}%
+              </span>
+              <button
+                onClick={handleZoomIn}
+                disabled={zoom >= 5}
+                className="p-1 hover:text-amber-200 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                title="Zoom In"
+              >
+                <ZoomIn size={12} />
+              </button>
+            </div>
+
             <button className="loupe-modal-close" onClick={onClose} aria-label="Close preview">
               <X size={14} />
             </button>
           </div>
         </div>
 
-        <div className="p-4 flex flex-col items-center justify-center bg-slate-950 overflow-auto" style={{ maxHeight: "75vh" }}>
-          {viewMode === "crop" ? (
-            <div className="relative flex flex-col items-center">
-              <canvas ref={canvasRef} className="rounded-lg shadow-2xl border-2 border-amber-400/60 max-w-full max-h-[65vh] object-contain" />
-              {tagHint && (
-                <div className="mt-2 text-xs font-mono text-amber-300 bg-amber-950/60 border border-amber-500/40 rounded-md px-3 py-1">
-                  Region: {tagHint}
+        {/* Modal Image Body with Cursor Pointer Zoom */}
+        <div
+          className="p-4 flex flex-col items-center justify-center bg-slate-950 overflow-hidden select-none"
+          style={{ maxHeight: "75vh" }}
+        >
+          <div
+            ref={containerRef}
+            onWheel={handleWheel}
+            onMouseMove={handleMouseMove}
+            onClick={handleClick}
+            className="relative overflow-hidden rounded-lg border border-slate-800/80 bg-black/40 flex items-center justify-center transition-shadow"
+            style={{
+              cursor: zoom > 1 ? "zoom-out" : "zoom-in",
+            }}
+          >
+            <div
+              style={{
+                transform: `scale(${zoom})`,
+                transformOrigin: `${origin.x}% ${origin.y}%`,
+                transition: "transform 0.15s ease-out",
+              }}
+              className="relative flex items-center justify-center"
+            >
+              {viewMode === "crop" ? (
+                <canvas
+                  ref={canvasRef}
+                  className="rounded-lg shadow-2xl border-2 border-amber-400/60 max-w-full max-h-[65vh] object-contain block"
+                />
+              ) : (
+                <div className="relative inline-block max-w-full max-h-[65vh] overflow-hidden rounded-lg border border-slate-700">
+                  <img src={screenshot} alt="Full screenshot" className="max-w-full max-h-[65vh] object-contain block" />
+                  <div
+                    className="absolute border-2 border-amber-400 bg-amber-400/20 shadow-[0_0_20px_rgba(251,191,36,0.6)] pointer-events-none"
+                    style={{
+                      top: `${rect.pctTop}%`,
+                      left: `${rect.pctLeft}%`,
+                      width: `${rect.pctWidth}%`,
+                      height: `${rect.pctHeight}%`,
+                    }}
+                  />
                 </div>
               )}
             </div>
-          ) : (
-            <div className="relative inline-block max-w-full max-h-[65vh] overflow-hidden rounded-lg border border-slate-700">
-              <img src={screenshot} alt="Full screenshot" className="max-w-full max-h-[65vh] object-contain block" />
-              <div
-                className="absolute border-2 border-amber-400 bg-amber-400/20 shadow-[0_0_20px_rgba(251,191,36,0.6)] pointer-events-none"
-                style={{
-                  top: `${rect.pctTop}%`,
-                  left: `${rect.pctLeft}%`,
-                  width: `${rect.pctWidth}%`,
-                  height: `${rect.pctHeight}%`,
-                }}
-              />
-            </div>
-          )}
+          </div>
+
+          <div className="mt-2 flex items-center gap-3 text-[0.68rem] font-mono text-slate-400">
+            <span>Scroll wheel or click image to zoom at cursor position</span>
+            {tagHint && viewMode === "crop" && (
+              <span className="text-amber-300 bg-amber-950/60 border border-amber-500/40 rounded px-2 py-0.5">
+                Region: {tagHint}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>

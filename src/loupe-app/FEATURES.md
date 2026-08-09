@@ -38,13 +38,18 @@ This document tracks all implemented features, capabilities, UI components, and 
 
 ---
 
-### 3. 👁️✂️ Interactive Crop Preview (Eye Icon)
+### 3. 👁️✂️ Interactive Crop Preview & Cursor Pointer Zoom
 - **Dedicated Eye Button on Every Tag**: Each tag card item (`01 File Explorer sidebar`, `02 Git diff editor`, etc.) features an **Eye icon button** (`👁`).
 - **Canvas-Based Cropped Image Generation**: Generates an isolated, zoomed HTML `<canvas>` crop of the exact area on the screen.
 - **Dual View Modes in Modal**:
   - ✂️ **Cropped Area**: Zoomed canvas cut-out of the specific UI element.
   - 🔍 **Full Screen**: Full screenshot with a glowing amber bounding box highlighting where the element lives on screen.
-- **Question & Message Block Crop Access**: Eye icons on clarification question headers allow instant verification of the region being discussed.
+- **🔍 Cursor Pointer Zoom System**:
+  - **Mouse Wheel Zoom**: Scroll up/down over the image to dynamically zoom in/out up to 500% (5.0x) centered directly at your cursor pointer position.
+  - **Click-to-Zoom Toggle**: Single click anywhere on the image zooms in to 2.5x focused on the exact pixel under the pointer; click again to zoom out to 100%.
+  - **Live Dynamic Origin Tracking**: Moving cursor across a zoomed image adjusts the focal origin for smooth visual inspection.
+  - **Zoom Controls Toolbar**: Header includes `-` / `+` zoom controls and a quick-reset percentage badge (`100%`).
+  - **🔒 Background Scroll Lock**: Page scroll is automatically locked (`overflow: hidden`) when modal is open and restored upon closing.
 
 ---
 
@@ -77,6 +82,11 @@ This document tracks all implemented features, capabilities, UI components, and 
 ---
 
 ## 📜 Feature Changelog
+
+### v1.3.0 — (2026-08-10)
+- ✨ **Added**: Cursor-pointer focused zoom in / zoom out for preview modal (`onWheel` + `onClick` focal tracking).
+- ✨ **Added**: Interactive Zoom Controls Toolbar (`-`, `+`, `{zoom}%` percentage badge reset button).
+- ✨ **Added**: Dynamic cursor styling (`zoom-in` / `zoom-out`).
 
 ### v1.2.0 — (2026-08-09)
 - ✨ **Added**: Tag-specific Eye icon buttons on every tag option card.
