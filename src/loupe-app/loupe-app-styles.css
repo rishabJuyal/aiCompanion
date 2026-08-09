@@ -1,0 +1,35 @@
+/* ------------------------------------------------------------------ */
+/*  loupe-app-styles.css                                               */
+/*  Styles and animations for the Loupe AI companion component.         */
+/* ------------------------------------------------------------------ */
+
+@keyframes loupe-scan {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(220%);
+  }
+}
+
+.animate-loupe-scan {
+  animation: loupe-scan 1.6s linear infinite;
+}
+
+/* Custom scrollbar styling for Loupe Companion Panel */
+.loupe-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.loupe-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.loupe-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.2);
+  border-radius: 3px;
+}
+
+.loupe-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.4);
+}

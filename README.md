@@ -86,12 +86,25 @@ loupe-app/
 ├── index.html          # entry HTML, loads Tailwind via CDN
 ├── package.json
 ├── vite.config.js
-├── MOTIVE.md            # why this app exists — read before adding features
+├── MOTIVE.md           # why this app exists — read before adding features
 ├── src/
-│   ├── main.jsx         # React root
-│   └── App.jsx          # Loupe itself — capture, tagging, chat, PiP logic
+│   ├── main.jsx        # React root entry point
+│   ├── App.jsx         # App component wrapper importing LoupeApp
+│   └── loupe-app/      # 📦 Single reusable folder for Loupe component
+│       ├── LoupeApp.jsx           # Main reusable Loupe component
+│       ├── loupe-app-styles.css   # Styles & animations (loupe-app-styles)
+│       └── README.md              # Reusability & dependency setup guide
 └── README.md
 ```
+
+## Reusing Loupe in Other Projects
+
+The entire Loupe component and its styles are packaged inside `src/loupe-app/`. To reuse Loupe in another React project:
+1. Copy the `src/loupe-app/` folder into your project.
+2. Install dependencies: `npm install lucide-react react react-dom`.
+3. Import and render `<LoupeApp />` in your app.
+
+See [`src/loupe-app/README.md`](file:///c:/Users/ADMIN/Desktop/Rishab/loupe-app/src/loupe-app/README.md) for full instructions.
 
 ## About the model list
 
