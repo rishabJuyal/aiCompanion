@@ -225,3 +225,212 @@
   background-size: 200% 100%;
   animation: loupe-shimmer 1.8s ease-in-out infinite;
 }
+
+/* ---- Clarification Question Bubble ---- */
+
+.loupe-clarify-bubble {
+  animation: loupe-fade-in 0.3s ease-out both;
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.04) 0%, rgba(15, 23, 42, 0.6) 100%);
+  padding: 0.75rem;
+}
+
+.loupe-clarify-bubble .loupe-clarify-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.loupe-clarify-bubble .loupe-clarify-question {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #fde68a; /* amber-200 */
+  line-height: 1.5;
+  margin-bottom: 0.6rem;
+}
+
+.loupe-clarify-bubble .loupe-clarify-context {
+  font-size: 0.7rem;
+  color: #94a3b8; /* slate-400 */
+  margin-bottom: 0.5rem;
+  font-style: italic;
+}
+
+/* ---- Clarify Option Button ---- */
+
+.loupe-clarify-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  background: rgba(15, 23, 42, 0.5);
+  padding: 0.45rem 0.65rem;
+  font-size: 0.78rem;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.loupe-clarify-option:hover:not(:disabled) {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.06);
+  transform: translateX(2px);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.15);
+}
+
+.loupe-clarify-option:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.loupe-clarify-option .loupe-option-bullet {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.06);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: #fbbf24;
+  flex-shrink: 0;
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ---- Eye Icon Button ---- */
+
+.loupe-eye-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3rem;
+  border-radius: 6px;
+  color: #64748b; /* slate-500 */
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.loupe-eye-btn:hover {
+  color: #fbbf24; /* amber-400 */
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.25);
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.15);
+}
+
+/* ---- Crop Preview Modal ---- */
+
+@keyframes loupe-modal-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes loupe-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.loupe-crop-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: loupe-backdrop-in 0.2s ease-out both;
+}
+
+.loupe-crop-modal {
+  position: relative;
+  max-width: 90vw;
+  max-height: 85vh;
+  border-radius: 12px;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  background: #0f172a;
+  overflow: hidden;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5), 0 0 30px rgba(251, 191, 36, 0.05);
+  animation: loupe-modal-in 0.25s ease-out both;
+}
+
+.loupe-crop-modal img {
+  display: block;
+  max-width: 100%;
+  max-height: 75vh;
+  object-fit: contain;
+}
+
+.loupe-crop-modal .loupe-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.loupe-crop-modal .loupe-modal-header .loupe-modal-title {
+  font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: #fbbf24;
+}
+
+.loupe-crop-modal .loupe-modal-header .loupe-modal-hint {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  max-width: 50%;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loupe-crop-modal .loupe-modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  border-radius: 6px;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.loupe-crop-modal .loupe-modal-close:hover {
+  color: #f8fafc;
+  background: rgba(248, 250, 252, 0.1);
+}
+
+/* ---- Clarify Chain History ---- */
+
+.loupe-clarify-chain-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.3rem 0;
+  font-size: 0.72rem;
+  animation: loupe-fade-in 0.2s ease-out both;
+}
+
+.loupe-clarify-chain-item .chain-q {
+  color: #94a3b8;
+}
+
+.loupe-clarify-chain-item .chain-a {
+  color: #fde68a;
+  font-weight: 500;
+}

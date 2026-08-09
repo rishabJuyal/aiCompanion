@@ -12,6 +12,7 @@ You can copy this single folder into any React application codebase to instantly
 loupe-app/
 ├── LoupeApp.jsx           # Main React component (Screen capture, AI Vision, Chat & PiP window)
 ├── loupe-app-styles.css   # Styles, keyframe animations, and custom scrollbar rules
+├── FEATURES.md            # Detailed feature catalog, changelog, and roadmap
 └── README.md              # Reusability & dependency setup guide (this file)
 ```
 

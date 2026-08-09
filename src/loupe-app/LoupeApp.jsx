@@ -12,6 +12,7 @@ import {
   AlertCircle,
   KeyRound,
   Sparkles,
+  Eye,
 } from "lucide-react";
 import "./loupe-app-styles.css";
 
@@ -35,7 +36,7 @@ const TAG_SYSTEM_PROMPT =
   "on it that a learner might want explained — UI elements, code, error " +
   "messages, panels, icons, output, anything. Respond with ONLY a raw JSON " +
   'array, no markdown fences, no preamble, no trailing text. Each item: ' +
-  '{"label": short name (max 6 words), "hint": one short phrase on where it is}.';
+  '{"label": short name (max 6 words), "hint": location phrase, "box_2d": [ymin, xmin, ymax, xmax] normalized 0 to 1000}.';
 
 const EXPLAIN_SYSTEM_PROMPT =
   "You are Loupe, a sharp, friendly coding tutor living inside a floating " +
@@ -50,6 +51,25 @@ const EXPLAIN_SYSTEM_PROMPT =
   "- Include a tiny fenced code example (```lang ... ```) only when it genuinely helps.\n" +
   "- Keep the whole answer compact — a learner should absorb it in under 30 seconds.\n" +
   "- Never claim you can't see the screenshot.";
+
+const CLARIFY_SYSTEM_PROMPT =
+  "You are Loupe, a screen-reading coding tutor. The learner selected something from " +
+  "a screenshot and wants it explained. Your job is to decide: is the selection specific " +
+  "enough to give a focused, useful answer, or is it too broad/ambiguous?\n\n" +
+  "Rules:\n" +
+  "- If the selection is clear and specific enough, respond with a JSON object:\n" +
+  '  {\"action\": \"explain\", \"answer\": \"...your full markdown explanation...\"}\n' +
+  "- If the selection is ambiguous or covers multiple things, respond with:\n" +
+  '  {\"action\": \"clarify\", \"question\": \"What specifically about [X]?\", \"options\": [\"Option A\", \"Option B\", \"Option C\"]}\n' +
+  "- Provide 2-4 short, distinct options that cover the most likely things the learner means.\n" +
+  "- The question should be brief and conversational.\n" +
+  "- If the learner has already answered clarifying questions (provided in context), use that " +
+  "to narrow down further or give the final explanation.\n" +
+  "- Respond with ONLY the raw JSON object. No markdown fences, no preamble, no trailing text.\n" +
+  "- For the 'explain' action, format the answer following these rules:\n" +
+  "  - Start with a one-line TL;DR in bold.\n" +
+  "  - Use short paragraphs, **bold** for key terms, `backticks` for code.\n" +
+  "  - Keep it compact — under 30 seconds to read.";
 
 export const MODEL_OPTIONS = [
   { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash (recommended)" },
@@ -274,6 +294,199 @@ function Eyebrow({ children, className = "" }) {
   );
 }
 
+/* ---------------------- Crop Calculation Helper ----------------------- */
+
+function getCropRect(box_2d, hint, imgWidth, imgHeight) {
+  let ymin, xmin, ymax, xmax;
+  if (Array.isArray(box_2d) && box_2d.length === 4) {
+    [ymin, xmin, ymax, xmax] = box_2d;
+  } else {
+    const h = (hint || "").toLowerCase();
+    if (h.includes("far left") || h.includes("left panel") || h.includes("sidebar") || h.includes("explorer")) { ymin = 50; xmin = 0; ymax = 950; xmax = 320; }
+    else if (h.includes("right sidebar") || h.includes("far right") || h.includes("right panel") || h.includes("assistant")) { ymin = 50; xmin = 680; ymax = 950; xmax = 1000; }
+    else if (h.includes("bottom") || h.includes("terminal") || h.includes("pane") || h.includes("output")) { ymin = 620; xmin = 0; ymax = 1000; xmax = 1000; }
+    else if (h.includes("top") || h.includes("tab") || h.includes("header") || h.includes("nav")) { ymin = 0; xmin = 0; ymax = 180; xmax = 1000; }
+    else if (h.includes("center") || h.includes("editor") || h.includes("diff") || h.includes("middle")) { ymin = 100; xmin = 280; ymax = 750; xmax = 720; }
+    else { ymin = 100; xmin = 100; ymax = 900; xmax = 900; }
+  }
+
+  ymin = Math.max(0, Math.min(1000, ymin));
+  xmin = Math.max(0, Math.min(1000, xmin));
+  ymax = Math.max(ymin + 30, Math.min(1000, ymax));
+  xmax = Math.max(xmin + 30, Math.min(1000, xmax));
+
+  // Add 4% padding around the box for surrounding context
+  const padY = Math.round((ymax - ymin) * 0.05);
+  const padX = Math.round((xmax - xmin) * 0.05);
+
+  const cropYmin = Math.max(0, ymin - padY);
+  const cropXmin = Math.max(0, xmin - padX);
+  const cropYmax = Math.min(1000, ymax + padY);
+  const cropXmax = Math.min(1000, xmax + padX);
+
+  return {
+    sx: (cropXmin / 1000) * imgWidth,
+    sy: (cropYmin / 1000) * imgHeight,
+    sWidth: ((cropXmax - cropXmin) / 1000) * imgWidth,
+    sHeight: ((cropYmax - cropYmin) / 1000) * imgHeight,
+    pctTop: (ymin / 1000) * 100,
+    pctLeft: (xmin / 1000) * 100,
+    pctWidth: ((xmax - xmin) / 1000) * 100,
+    pctHeight: ((ymax - ymin) / 1000) * 100,
+  };
+}
+
+/* ---------------------- Crop Preview Modal ----------------------- */
+
+function CropPreviewModal({ screenshot, tagLabel, tagHint, box_2d, onClose }) {
+  const canvasRef = useRef(null);
+  const [viewMode, setViewMode] = useState("crop"); // 'crop' | 'full'
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!screenshot || !canvasRef.current || viewMode !== "crop") return;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = screenshot;
+    img.onload = () => {
+      const rect = getCropRect(box_2d, tagHint, img.width, img.height);
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      canvas.width = rect.sWidth;
+      canvas.height = rect.sHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(
+        img,
+        rect.sx, rect.sy, rect.sWidth, rect.sHeight,
+        0, 0, rect.sWidth, rect.sHeight
+      );
+    };
+  }, [screenshot, tagHint, box_2d, viewMode]);
+
+  if (!screenshot) return null;
+  const rect = getCropRect(box_2d, tagHint, 1000, 1000);
+
+  return (
+    <div className="loupe-crop-modal-backdrop" onClick={onClose}>
+      <div className="loupe-crop-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="loupe-modal-header">
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span className="loupe-modal-title">Cropped Screenshot Area</span>
+            {tagLabel && (
+              <span style={{ fontSize: "0.75rem", color: "#fcd34d", fontWeight: 600 }}>
+                — {tagLabel}
+              </span>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <div className="flex bg-slate-900 border border-slate-700/80 rounded-md p-0.5 text-[0.65rem] font-mono">
+              <button
+                onClick={() => setViewMode("crop")}
+                className={`px-2 py-0.5 rounded transition-all ${viewMode === "crop" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"}`}
+              >
+                Cropped Area
+              </button>
+              <button
+                onClick={() => setViewMode("full")}
+                className={`px-2 py-0.5 rounded transition-all ${viewMode === "full" ? "bg-amber-400 text-slate-950 font-bold" : "text-slate-400 hover:text-slate-200"}`}
+              >
+                Full Screen
+              </button>
+            </div>
+            <button className="loupe-modal-close" onClick={onClose} aria-label="Close preview">
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-4 flex flex-col items-center justify-center bg-slate-950 overflow-auto" style={{ maxHeight: "75vh" }}>
+          {viewMode === "crop" ? (
+            <div className="relative flex flex-col items-center">
+              <canvas ref={canvasRef} className="rounded-lg shadow-2xl border-2 border-amber-400/60 max-w-full max-h-[65vh] object-contain" />
+              {tagHint && (
+                <div className="mt-2 text-xs font-mono text-amber-300 bg-amber-950/60 border border-amber-500/40 rounded-md px-3 py-1">
+                  Region: {tagHint}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="relative inline-block max-w-full max-h-[65vh] overflow-hidden rounded-lg border border-slate-700">
+              <img src={screenshot} alt="Full screenshot" className="max-w-full max-h-[65vh] object-contain block" />
+              <div
+                className="absolute border-2 border-amber-400 bg-amber-400/20 shadow-[0_0_20px_rgba(251,191,36,0.6)] pointer-events-none"
+                style={{
+                  top: `${rect.pctTop}%`,
+                  left: `${rect.pctLeft}%`,
+                  width: `${rect.pctWidth}%`,
+                  height: `${rect.pctHeight}%`,
+                }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------- Clarify Question Block ---------------------- */
+
+function ClarifyQuestionBlock({ question, options, chain, onAnswer, onShowScreenshot, clarifyingTag, busy }) {
+  return (
+    <div className="loupe-clarify-bubble">
+      <div className="loupe-clarify-header">
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <Sparkles size={12} className="text-amber-400" />
+          <span className="font-mono text-[0.6rem] tracking-[0.18em] text-amber-500/70">LOUPE NEEDS CONTEXT</span>
+        </div>
+        <button
+          className="loupe-eye-btn flex items-center gap-1 text-[0.65rem] px-2 py-0.5 bg-amber-400/15 border border-amber-400/35 text-amber-300 hover:bg-amber-400/25 rounded transition-all"
+          onClick={() => onShowScreenshot(clarifyingTag)}
+          title="Crop & view screen area for this question"
+          aria-label="View crop"
+        >
+          <Eye size={13} />
+          <span>Crop Area</span>
+        </button>
+      </div>
+
+      {/* Show previous Q&A chain */}
+      {chain.length > 0 && (
+        <div style={{ marginBottom: "0.5rem" }}>
+          {chain.map((item, i) => (
+            <div key={i} className="loupe-clarify-chain-item">
+              <span className="chain-q">Q: {item.question}</span>
+              <span style={{ color: "#475569" }}>→</span>
+              <span className="chain-a">{item.selectedOption}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="loupe-clarify-question">{question}</div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+        {options.map((opt, i) => (
+          <button
+            key={i}
+            className="loupe-clarify-option"
+            onClick={() => onAnswer(opt)}
+            disabled={busy}
+          >
+            <span className="loupe-option-bullet">{String.fromCharCode(65 + i)}</span>
+            <span>{opt}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* -------------------------- the panel itself ------------------------ */
 
 function CompanionPanel({
@@ -296,6 +509,15 @@ function CompanionPanel({
   onReset,
   chatEndRef,
   hasApiKey,
+  /* clarification props */
+  clarifyQuestion,
+  clarifyOptions,
+  clarifyChain,
+  clarifyingTag,
+  onClarifyAnswer,
+  showCropModal,
+  onShowCropModal,
+  onHideCropModal,
 }) {
   const hasSession = !!screenshot;
 
@@ -405,34 +627,79 @@ function CompanionPanel({
         {/* Session active — show screenshot + tags + chat */}
         {hasSession && stage !== "capturing" && stage !== "analyzing" && (
           <>
-            {/* Screenshot thumbnail */}
-            <div className="relative w-full h-16 rounded-lg border border-slate-800/70 overflow-hidden group">
+            {/* Screenshot thumbnail with eye icon */}
+            <div className="relative w-full h-24 rounded-lg border border-slate-800/70 overflow-hidden group cursor-pointer"
+                 onClick={onShowCropModal}>
               <img src={screenshot} alt="Captured screen" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
+              <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1.5">
+                <button
+                  className="loupe-eye-btn"
+                  onClick={(e) => { e.stopPropagation(); onShowCropModal(); }}
+                  title="View full screenshot"
+                  aria-label="View full screenshot"
+                  style={{ background: "rgba(0,0,0,0.6)", borderColor: "rgba(148,163,184,0.25)" }}
+                >
+                  <Eye size={13} />
+                  <span style={{ fontSize: "0.6rem", marginLeft: "0.25rem", color: "#94a3b8", fontFamily: "monospace", letterSpacing: "0.05em" }}>VIEW</span>
+                </button>
+              </div>
             </div>
 
-            {/* Tag options */}
-            {options.length > 0 && (
+            {/* Active clarification question */}
+            {clarifyQuestion && (
+              <ClarifyQuestionBlock
+                question={clarifyQuestion}
+                options={clarifyOptions}
+                chain={clarifyChain}
+                onAnswer={onClarifyAnswer}
+                onShowScreenshot={onShowCropModal}
+                clarifyingTag={clarifyingTag}
+                busy={busy}
+              />
+            )}
+
+            {/* Tag options — only show when NOT in a clarification flow */}
+            {!clarifyQuestion && options.length > 0 && (
               <div className="space-y-2">
                 <Eyebrow>What should Loupe explain?</Eyebrow>
                 <div className="space-y-1.5">
                   {options.map((opt, i) => (
-                    <button
+                    <div
                       key={i}
-                      onClick={() => onChooseOption(opt)}
-                      disabled={busy}
-                      className="loupe-tag-btn w-full flex items-start gap-2.5 text-left rounded-lg border border-slate-800/70 hover:border-amber-400/50 bg-slate-900/40 hover:bg-slate-800/50 px-3 py-2 disabled:opacity-30 disabled:pointer-events-none"
+                      className="loupe-tag-btn w-full flex items-center justify-between gap-2 text-left rounded-lg border border-slate-800/70 hover:border-amber-400/50 bg-slate-900/40 hover:bg-slate-800/50 px-3 py-2 transition-all group"
                     >
-                      <span className="font-mono text-[0.65rem] text-amber-400 border border-amber-400/30 rounded px-1 py-0.5 mt-px shrink-0 bg-amber-400/5">
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <span className="min-w-0">
-                        <span className="block text-[0.8rem] text-slate-100 leading-snug font-medium">{opt.label}</span>
-                        {opt.hint && (
-                          <span className="block text-[0.68rem] text-slate-500 leading-snug mt-0.5">{opt.hint}</span>
-                        )}
-                      </span>
-                    </button>
+                      <button
+                        onClick={() => onChooseOption(opt)}
+                        disabled={busy}
+                        className="flex-1 flex items-start gap-2.5 text-left min-w-0 disabled:opacity-30 disabled:pointer-events-none"
+                      >
+                        <span className="font-mono text-[0.65rem] text-amber-400 border border-amber-400/30 rounded px-1 py-0.5 mt-px shrink-0 bg-amber-400/5">
+                          {String(i + 1).padStart(2, "0")}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="block text-[0.8rem] text-slate-100 leading-snug font-medium group-hover:text-amber-300 transition-colors">
+                            {opt.label}
+                          </span>
+                          {opt.hint && (
+                            <span className="block text-[0.68rem] text-slate-500 leading-snug mt-0.5">{opt.hint}</span>
+                          )}
+                        </span>
+                      </button>
+
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onShowCropModal(opt);
+                        }}
+                        disabled={busy}
+                        className="loupe-eye-btn p-1.5 rounded-md text-amber-400/80 hover:text-amber-300 bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 transition-all shrink-0 ml-1"
+                        title={`Crop & view ${opt.label}`}
+                        aria-label={`Crop and view ${opt.label}`}
+                      >
+                        <Eye size={14} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -445,6 +712,17 @@ function CompanionPanel({
               ↻ Capture again
             </button>
           </>
+        )}
+
+        {/* Crop Preview Modal */}
+        {showCropModal && (
+          <CropPreviewModal
+            screenshot={screenshot}
+            tagLabel={showCropModal?.label || clarifyingTag?.label}
+            tagHint={showCropModal?.hint || clarifyingTag?.hint}
+            box_2d={showCropModal?.box_2d || clarifyingTag?.box_2d}
+            onClose={onHideCropModal}
+          />
         )}
 
         {/* Chat messages */}
@@ -625,6 +903,13 @@ export default function LoupeApp() {
   const [messages, setMessages] = useState([]);
   const [promptText, setPromptText] = useState("");
 
+  /* --- Clarification flow state --- */
+  const [clarifyChain, setClarifyChain] = useState([]);        // [{question, selectedOption}, ...]
+  const [clarifyQuestion, setClarifyQuestion] = useState(null); // current question string
+  const [clarifyOptions, setClarifyOptions] = useState([]);     // current option strings
+  const [clarifyingTag, setClarifyingTag] = useState(null);     // the tag that triggered clarification
+  const [showCropModal, setShowCropModal] = useState(null);     // crop tag object or null
+
   const apiMessagesRef = useRef([]); // Gemini-format history ({role, parts}) for the current screenshot session
   const chatEndRef = useRef(null);
   const pipContainerRef = useRef(null);
@@ -641,7 +926,14 @@ export default function LoupeApp() {
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, clarifyQuestion]);
+
+  const clearClarification = useCallback(() => {
+    setClarifyChain([]);
+    setClarifyQuestion(null);
+    setClarifyOptions([]);
+    setClarifyingTag(null);
+  }, []);
 
   const cloneStylesInto = (targetDoc) => {
     try {
@@ -697,7 +989,8 @@ export default function LoupeApp() {
     setError("");
     setPromptText("");
     apiMessagesRef.current = [];
-  }, []);
+    clearClarification();
+  }, [clearClarification]);
 
   const captureScreen = useCallback(async () => {
     setError("");
@@ -805,27 +1098,171 @@ export default function LoupeApp() {
     [screenshot, apiKey, modelId]
   );
 
+  /* ---------- Clarification flow ---------- */
+
+  const processClarifyResponse = useCallback(
+    (text, tag, currentChain) => {
+      // Parse the AI's JSON response
+      let parsed;
+      try {
+        const clean = text.replace(/```json|```/g, "").trim();
+        parsed = JSON.parse(clean);
+      } catch (_) {
+        // If parsing fails, treat it as a direct explanation
+        parsed = { action: "explain", answer: text };
+      }
+
+      if (parsed.action === "clarify" && parsed.question && Array.isArray(parsed.options) && parsed.options.length >= 2) {
+        // AI wants more context — show the next question
+        setClarifyQuestion(parsed.question);
+        setClarifyOptions(parsed.options);
+      } else {
+        // AI is ready to explain — put the answer in chat
+        const answer = parsed.answer || parsed.text || text;
+        setMessages((prev) => [
+          ...prev,
+          { role: "user", text: tag.label + (currentChain.length > 0 ? " → " + currentChain.map(c => c.selectedOption).join(" → ") : "") },
+          { role: "assistant", text: answer },
+        ]);
+        // Put the explanation into the API history for follow-ups
+        const contextSummary = currentChain.map(c => `Q: ${c.question} → A: ${c.selectedOption}`).join("\n");
+        apiMessagesRef.current = [
+          {
+            role: "user",
+            parts: [
+              ...(screenshot ? [imagePartFromDataUrl(screenshot)] : []),
+              { text: `Explain "${tag.label}" (${tag.hint || "seen in the screenshot"}).${contextSummary ? "\nContext:\n" + contextSummary : ""}` },
+            ],
+          },
+          { role: "model", parts: [{ text: answer }] },
+        ];
+        clearClarification();
+      }
+    },
+    [screenshot, clearClarification]
+  );
+
+  const startClarification = useCallback(
+    async (tag) => {
+      if (!apiKey) {
+        setError("Add your Gemini API key first.");
+        return;
+      }
+      setBusy(true);
+      setError("");
+      setClarifyingTag(tag);
+      setClarifyChain([]);
+      setClarifyQuestion(null);
+      setClarifyOptions([]);
+
+      try {
+        const requestText =
+          `The learner selected: "${tag.label}" (${tag.hint || "seen in the screenshot"}). ` +
+          `Decide if this is specific enough to explain directly, or if you need to ask a clarifying question.`;
+
+        const clarifyMessages = [
+          {
+            role: "user",
+            parts: [
+              ...(screenshot ? [imagePartFromDataUrl(screenshot)] : []),
+              { text: requestText },
+            ],
+          },
+        ];
+
+        const reply = await callGemini(apiKey, modelId, CLARIFY_SYSTEM_PROMPT, clarifyMessages);
+        processClarifyResponse(reply, tag, []);
+      } catch (err) {
+        setError("Loupe couldn't process that: " + err.message);
+        clearClarification();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [apiKey, modelId, screenshot, processClarifyResponse, clearClarification]
+  );
+
+  const onClarifyAnswer = useCallback(
+    async (selectedOption) => {
+      if (!clarifyingTag) return;
+      setBusy(true);
+      setError("");
+
+      const newChain = [...clarifyChain, { question: clarifyQuestion, selectedOption }];
+      setClarifyChain(newChain);
+      setClarifyQuestion(null);
+      setClarifyOptions([]);
+
+      try {
+        // Build context from the entire chain
+        const chainContext = newChain
+          .map((c) => `Q: ${c.question}\nA: ${c.selectedOption}`)
+          .join("\n\n");
+
+        const requestText =
+          `The learner selected: "${clarifyingTag.label}" (${clarifyingTag.hint || "seen in the screenshot"}).\n\n` +
+          `Previous clarifications:\n${chainContext}\n\n` +
+          `Based on these answers, either explain now or ask another clarifying question if still unclear.`;
+
+        const clarifyMessages = [
+          {
+            role: "user",
+            parts: [
+              ...(screenshot ? [imagePartFromDataUrl(screenshot)] : []),
+              { text: requestText },
+            ],
+          },
+        ];
+
+        const reply = await callGemini(apiKey, modelId, CLARIFY_SYSTEM_PROMPT, clarifyMessages);
+        processClarifyResponse(reply, clarifyingTag, newChain);
+      } catch (err) {
+        setError("Loupe couldn't process that: " + err.message);
+        clearClarification();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [apiKey, modelId, screenshot, clarifyingTag, clarifyChain, clarifyQuestion, processClarifyResponse, clearClarification]
+  );
+
+  /* ---------- Original option/send handlers ---------- */
+
   const onChooseOption = useCallback(
     (option) => {
       const extra = promptText.trim();
-      const requestText =
-        `Explain "${option.label}" (${option.hint || "seen in the screenshot"}). ` +
-        `Teach it like a quick, clear coding lesson: what it is, why it's there, and a tiny example if relevant.` +
-        (extra ? ` Also take this into account: ${extra}` : "");
-      const isFirstTurn = apiMessagesRef.current.length === 0;
-      askLoupe(option.label + (extra ? " — " + extra : ""), requestText, isFirstTurn);
-      setPromptText("");
+      if (extra) {
+        // If user typed something specific, skip clarification and explain directly
+        const requestText =
+          `Explain "${option.label}" (${option.hint || "seen in the screenshot"}). ` +
+          `Teach it like a quick, clear coding lesson: what it is, why it's there, and a tiny example if relevant.` +
+          ` Also take this into account: ${extra}`;
+        const isFirstTurn = apiMessagesRef.current.length === 0;
+        askLoupe(option.label + " — " + extra, requestText, isFirstTurn);
+        setPromptText("");
+      } else {
+        // No extra text — go through the clarification flow
+        startClarification(option);
+        setPromptText("");
+      }
     },
-    [askLoupe, promptText]
+    [askLoupe, startClarification, promptText]
   );
 
   const onSend = useCallback(() => {
     const text = promptText.trim();
     if (!text) return;
+    // If we're in a clarification flow, send as a free-text clarification
+    if (clarifyQuestion && clarifyingTag) {
+      // Treat typed text as a custom answer to the clarification
+      onClarifyAnswer(text);
+      setPromptText("");
+      return;
+    }
     const isFirstTurn = apiMessagesRef.current.length === 0;
     askLoupe(text, text, isFirstTurn && !!screenshot);
     setPromptText("");
-  }, [askLoupe, promptText, screenshot]);
+  }, [askLoupe, promptText, screenshot, clarifyQuestion, clarifyingTag, onClarifyAnswer]);
 
   const panelProps = {
     onPopOut: openPiP,
@@ -846,6 +1283,15 @@ export default function LoupeApp() {
     onReset: resetSession,
     chatEndRef,
     hasApiKey: !!apiKey,
+    /* clarification props */
+    clarifyQuestion,
+    clarifyOptions,
+    clarifyChain,
+    clarifyingTag,
+    onClarifyAnswer,
+    showCropModal,
+    onShowCropModal: (tag) => setShowCropModal(tag || { label: "Full Screenshot", hint: "Full view", box_2d: [0, 0, 1000, 1000] }),
+    onHideCropModal: () => setShowCropModal(null),
   };
 
   return (
