@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import {
   Camera,
@@ -11,6 +11,7 @@ import {
   Crosshair,
   AlertCircle,
   KeyRound,
+  Sparkles,
 } from "lucide-react";
 import "./loupe-app-styles.css";
 
@@ -39,10 +40,16 @@ const TAG_SYSTEM_PROMPT =
 const EXPLAIN_SYSTEM_PROMPT =
   "You are Loupe, a sharp, friendly coding tutor living inside a floating " +
   "desktop companion. You can see the screenshot the learner captured. " +
-  "Explain things briefly and clearly, like teaching a smart beginner: what " +
-  "it is, why it's there, and a tiny code example if it genuinely helps. " +
-  "Keep answers tight — a few short paragraphs at most. Never claim you " +
-  "can't see the screenshot.";
+  "Explain things clearly and scanably for fast understanding. Rules:\n" +
+  "- Start with a one-line TL;DR in bold.\n" +
+  "- Use short paragraphs (2-3 sentences max each).\n" +
+  "- Use **bold** for key terms and concepts the first time they appear.\n" +
+  "- Use `backticks` for any code, file names, commands, or technical identifiers.\n" +
+  "- Use bullet points (- item) when listing multiple related things.\n" +
+  "- Use numbered lists (1. step) only for sequential steps.\n" +
+  "- Include a tiny fenced code example (```lang ... ```) only when it genuinely helps.\n" +
+  "- Keep the whole answer compact — a learner should absorb it in under 30 seconds.\n" +
+  "- Never claim you can't see the screenshot.";
 
 export const MODEL_OPTIONS = [
   { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash (recommended)" },
@@ -53,6 +60,7 @@ export const MODEL_OPTIONS = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+  // --- not chat/vision models: kept in the list as requested, will not work for capture → explain ---
   { id: "gemini-omni-flash", label: "Gemini Omni Flash (video-gen model, not for this flow)" },
   { id: "gemini-3.1-flash-tts", label: "Gemini 3.1 Flash TTS (speech model, not for this flow)" },
   { id: "gemini-2.5-flash-tts", label: "Gemini 2.5 Flash TTS (speech model, not for this flow)" },
@@ -73,7 +81,7 @@ async function callGemini(apiKey, model, system, messages) {
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
       contents: messages,
-      generationConfig: { maxOutputTokens: 1000 },
+      generationConfig: { maxOutputTokens: 1500 },
     }),
   });
   if (!res.ok) {
@@ -98,25 +106,169 @@ function imagePartFromDataUrl(dataUrl) {
   return { inlineData: { mimeType, data } };
 }
 
+/* ------------------- lightweight markdown renderer ------------------- */
+
+// Escapes HTML entities
+function escapeHtml(str) {
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Renders inline markdown: **bold**, `code`
+function renderInline(text) {
+  let out = escapeHtml(text);
+  // Bold: **text**
+  out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Inline code: `code`
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return out;
+}
+
+// Converts a markdown string to an HTML string
+function markdownToHtml(md) {
+  if (!md) return "";
+
+  // Normalise line endings
+  const raw = md.replace(/\r\n/g, "\n");
+
+  // Split into blocks by fenced code first
+  const parts = raw.split(/(```[\s\S]*?```)/g);
+  let html = "";
+
+  for (const part of parts) {
+    // Fenced code block
+    if (part.startsWith("```")) {
+      const match = part.match(/^```(\w*)\n?([\s\S]*?)```$/);
+      const code = match ? match[2].replace(/\n$/, "") : part.slice(3, -3);
+      html += `<pre><code>${escapeHtml(code)}</code></pre>`;
+      continue;
+    }
+
+    // Process non-code blocks line by line
+    const lines = part.split("\n");
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // Empty line — skip
+      if (!trimmed) { i++; continue; }
+
+      // Headings
+      if (/^### /.test(trimmed)) {
+        html += `<h3>${renderInline(trimmed.slice(4))}</h3>`;
+        i++; continue;
+      }
+      if (/^## /.test(trimmed)) {
+        html += `<h2>${renderInline(trimmed.slice(3))}</h2>`;
+        i++; continue;
+      }
+      if (/^# /.test(trimmed)) {
+        html += `<h1>${renderInline(trimmed.slice(2))}</h1>`;
+        i++; continue;
+      }
+
+      // Horizontal rule
+      if (/^[-*_]{3,}$/.test(trimmed)) {
+        html += "<hr>";
+        i++; continue;
+      }
+
+      // Blockquote
+      if (trimmed.startsWith("> ")) {
+        const quoteLines = [];
+        while (i < lines.length && lines[i].trim().startsWith("> ")) {
+          quoteLines.push(lines[i].trim().slice(2));
+          i++;
+        }
+        html += `<blockquote><p>${renderInline(quoteLines.join(" "))}</p></blockquote>`;
+        continue;
+      }
+
+      // Unordered list (- item or * item)
+      if (/^[-*] /.test(trimmed)) {
+        html += "<ul>";
+        while (i < lines.length && /^[-*] /.test(lines[i].trim())) {
+          html += `<li>${renderInline(lines[i].trim().slice(2))}</li>`;
+          i++;
+        }
+        html += "</ul>";
+        continue;
+      }
+
+      // Ordered list (1. item)
+      if (/^\d+\.\s/.test(trimmed)) {
+        html += "<ol>";
+        while (i < lines.length && /^\d+\.\s/.test(lines[i].trim())) {
+          html += `<li>${renderInline(lines[i].trim().replace(/^\d+\.\s/, ""))}</li>`;
+          i++;
+        }
+        html += "</ol>";
+        continue;
+      }
+
+      // Paragraph — collect contiguous non-blank, non-special lines
+      const paraLines = [];
+      while (
+        i < lines.length &&
+        lines[i].trim() &&
+        !/^#{1,3} /.test(lines[i].trim()) &&
+        !/^[-*] /.test(lines[i].trim()) &&
+        !/^\d+\.\s/.test(lines[i].trim()) &&
+        !/^> /.test(lines[i].trim()) &&
+        !/^[-*_]{3,}$/.test(lines[i].trim()) &&
+        !lines[i].trim().startsWith("```")
+      ) {
+        paraLines.push(lines[i].trim());
+        i++;
+      }
+      if (paraLines.length > 0) {
+        html += `<p>${renderInline(paraLines.join(" "))}</p>`;
+      }
+    }
+  }
+
+  return html;
+}
+
+// React component that renders markdown as formatted HTML
+function RenderedMarkdown({ text }) {
+  const html = useMemo(() => markdownToHtml(text), [text]);
+  return <div className="loupe-md" dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
 /* -------------------------- visual pieces -------------------------- */
 
 function ScanLine() {
   return (
-    <div className="absolute inset-0 overflow-hidden rounded-md pointer-events-none">
+    <div className="absolute inset-0 overflow-hidden rounded-lg pointer-events-none">
       <div
         className="absolute left-0 right-0 h-8 bg-amber-400/25 animate-loupe-scan"
         style={{
           top: "-2rem",
-          boxShadow: "0 0 12px 2px rgba(251,191,36,0.35)",
+          boxShadow: "0 0 16px 3px rgba(251,191,36,0.3)",
         }}
       />
     </div>
   );
 }
 
+function TypingIndicator() {
+  return (
+    <div className="flex items-center gap-3 loupe-fade-in">
+      <div className="flex items-center gap-2 rounded-lg px-3 py-2.5 bg-slate-800/50 border border-slate-700/60">
+        <Sparkles size={13} className="text-amber-400" />
+        <span className="text-xs text-slate-400 font-medium">Loupe is thinking</span>
+        <span className="loupe-typing-dots flex gap-1 ml-0.5">
+          <span /><span /><span />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function Eyebrow({ children, className = "" }) {
   return (
-    <div className={"font-mono text-xs uppercase tracking-widest text-slate-500 " + className}>
+    <div className={"font-mono text-[0.65rem] uppercase tracking-[0.15em] text-slate-500 " + className}>
       {children}
     </div>
   );
@@ -148,30 +300,32 @@ function CompanionPanel({
   const hasSession = !!screenshot;
 
   return (
-    <div className="flex flex-col w-full h-full text-slate-100" style={{ background: "#0b1220" }}>
+    <div className="flex flex-col w-full h-full text-slate-100" style={{ background: "#0a0f1c" }}>
       {/* header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="flex items-center justify-center w-7 h-7 rounded-full border border-amber-400/60 text-amber-400">
-            <Crosshair size={14} strokeWidth={2.25} />
+      <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-800/80 shrink-0"
+           style={{ background: "linear-gradient(180deg, rgba(15,23,42,0.95) 0%, rgba(10,15,28,0.95) 100%)" }}>
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-7 h-7 rounded-full border border-amber-400/50 text-amber-400"
+               style={{ background: "rgba(251,191,36,0.06)" }}>
+            <Crosshair size={13} strokeWidth={2.5} />
           </div>
           <div>
-            <div className="font-mono text-sm tracking-widest text-slate-100 leading-none">LOUPE</div>
-            <div className="font-mono text-xs tracking-widest text-slate-500 leading-none mt-0.5">
+            <div className="font-mono text-[0.7rem] font-semibold tracking-[0.2em] text-slate-100 leading-none">LOUPE</div>
+            <div className="font-mono text-[0.55rem] tracking-[0.18em] text-slate-500 leading-none mt-0.5">
               SCREEN FIELD NOTES
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           {hasSession && (
             <button
               onClick={onReset}
               title="Clear this session"
               aria-label="Clear session"
-              className="p-1.5 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+              className="p-1.5 rounded-md text-slate-500 hover:text-slate-200 hover:bg-slate-800/70 transition-all"
             >
-              <RotateCcw size={15} />
+              <RotateCcw size={14} />
             </button>
           )}
           {pipSupported && !isPiP && (
@@ -179,9 +333,9 @@ function CompanionPanel({
               onClick={onPopOut}
               title="Pop out onto the desktop"
               aria-label="Pop out onto the desktop"
-              className="p-1.5 rounded text-slate-500 hover:text-amber-400 hover:bg-slate-800 transition-colors"
+              className="p-1.5 rounded-md text-slate-500 hover:text-amber-400 hover:bg-slate-800/70 transition-all"
             >
-              <Maximize2 size={15} />
+              <Maximize2 size={14} />
             </button>
           )}
           {isPiP && (
@@ -189,66 +343,75 @@ function CompanionPanel({
               onClick={onDockBack}
               title="Dock back into the page"
               aria-label="Dock back into the page"
-              className="p-1.5 rounded text-slate-500 hover:text-amber-400 hover:bg-slate-800 transition-colors"
+              className="p-1.5 rounded-md text-slate-500 hover:text-amber-400 hover:bg-slate-800/70 transition-all"
             >
-              <Minimize2 size={15} />
+              <Minimize2 size={14} />
             </button>
           )}
         </div>
       </div>
 
       {/* body */}
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 loupe-scrollbar">
+      <div className="flex-1 overflow-y-auto px-3.5 py-3.5 space-y-3 loupe-scrollbar">
         {!hasApiKey && (
-          <div className="flex items-start gap-2 rounded-md border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
-            <KeyRound size={15} className="mt-0.5 shrink-0" />
-            <span>Add your Gemini API key on the left before capturing.</span>
+          <div className="flex items-start gap-2.5 rounded-lg border border-amber-800/50 bg-amber-950/20 px-3 py-2.5 text-sm text-amber-200 loupe-fade-in">
+            <KeyRound size={14} className="mt-0.5 shrink-0" />
+            <span className="text-xs leading-relaxed">Add your Gemini API key on the left before capturing.</span>
           </div>
         )}
 
         {error && (
-          <div className="flex items-start gap-2 rounded-md border border-rose-800/60 bg-rose-950/40 px-3 py-2 text-sm text-rose-200">
-            <AlertCircle size={15} className="mt-0.5 shrink-0" />
+          <div className="flex items-start gap-2.5 rounded-lg border border-rose-800/50 bg-rose-950/30 px-3 py-2.5 text-xs text-rose-200 leading-relaxed loupe-fade-in">
+            <AlertCircle size={14} className="mt-0.5 shrink-0" />
             <span>{error}</span>
           </div>
         )}
 
+        {/* Idle state — no session yet */}
         {!hasSession && stage === "idle" && (
-          <div className="flex flex-col items-center text-center gap-3 py-8">
-            <div className="w-12 h-12 rounded-full border border-dashed border-slate-700 flex items-center justify-center text-slate-600">
-              <Crosshair size={22} />
+          <div className="flex flex-col items-center text-center gap-3 py-10 loupe-fade-in">
+            <div className="w-14 h-14 rounded-2xl border border-dashed border-slate-700/80 flex items-center justify-center text-slate-600"
+                 style={{ background: "rgba(251,191,36,0.03)" }}>
+              <Crosshair size={24} strokeWidth={1.5} />
             </div>
             <div>
-              <div className="text-slate-200 font-medium">Point it at anything.</div>
-              <div className="text-slate-500 text-sm mt-1 max-w-[15rem]">
-                Capture your screen and Loupe tags what's on it. Pick a tag to get a
-                plain-English explainer.
+              <div className="text-slate-200 font-semibold text-sm">Point it at anything.</div>
+              <div className="text-slate-500 text-xs mt-1.5 max-w-[14rem] leading-relaxed">
+                Capture your screen and Loupe tags what's on it.
+                Pick a tag to get a plain-English explainer.
               </div>
             </div>
           </div>
         )}
 
+        {/* Capturing / Analyzing state */}
         {(stage === "capturing" || stage === "analyzing") && (
-          <div className="space-y-2">
-            <div className="relative w-full h-28 rounded-md border border-slate-800 bg-slate-900 overflow-hidden">
+          <div className="space-y-2.5 loupe-fade-in">
+            <div className="relative w-full h-28 rounded-lg border border-slate-800/80 bg-slate-900/80 overflow-hidden">
               {screenshot && (
-                <img src={screenshot} alt="Captured screen" className="w-full h-full object-cover opacity-60" />
+                <img src={screenshot} alt="Captured screen" className="w-full h-full object-cover opacity-50" />
               )}
               <ScanLine />
+              {/* shimmer bar */}
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 loupe-shimmer" />
             </div>
-            <div className="flex items-center gap-2 text-slate-400 text-sm font-mono">
-              <Loader2 size={14} className="animate-spin" />
+            <div className="flex items-center gap-2 text-slate-400 text-xs font-mono">
+              <Loader2 size={12} className="animate-spin text-amber-400" />
               {stage === "capturing" ? "Reading the screen…" : "Scanning for things to explain…"}
             </div>
           </div>
         )}
 
+        {/* Session active — show screenshot + tags + chat */}
         {hasSession && stage !== "capturing" && stage !== "analyzing" && (
           <>
-            <div className="relative w-full h-20 rounded-md border border-slate-800 overflow-hidden">
-              <img src={screenshot} alt="Captured screen" className="w-full h-full object-cover" />
+            {/* Screenshot thumbnail */}
+            <div className="relative w-full h-16 rounded-lg border border-slate-800/70 overflow-hidden group">
+              <img src={screenshot} alt="Captured screen" className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/30 to-transparent pointer-events-none" />
             </div>
 
+            {/* Tag options */}
             {options.length > 0 && (
               <div className="space-y-2">
                 <Eyebrow>What should Loupe explain?</Eyebrow>
@@ -258,15 +421,15 @@ function CompanionPanel({
                       key={i}
                       onClick={() => onChooseOption(opt)}
                       disabled={busy}
-                      className="w-full flex items-start gap-2 text-left rounded-md border border-slate-800 hover:border-amber-400/60 bg-slate-900/60 hover:bg-slate-900 px-2.5 py-2 transition-colors disabled:opacity-40"
+                      className="loupe-tag-btn w-full flex items-start gap-2.5 text-left rounded-lg border border-slate-800/70 hover:border-amber-400/50 bg-slate-900/40 hover:bg-slate-800/50 px-3 py-2 disabled:opacity-30 disabled:pointer-events-none"
                     >
-                      <span className="font-mono text-xs text-amber-400 border border-amber-400/40 rounded px-1 py-0.5 mt-0.5 shrink-0">
+                      <span className="font-mono text-[0.65rem] text-amber-400 border border-amber-400/30 rounded px-1 py-0.5 mt-px shrink-0 bg-amber-400/5">
                         {String(i + 1).padStart(2, "0")}
                       </span>
-                      <span>
-                        <span className="block text-sm text-slate-100 leading-tight">{opt.label}</span>
+                      <span className="min-w-0">
+                        <span className="block text-[0.8rem] text-slate-100 leading-snug font-medium">{opt.label}</span>
                         {opt.hint && (
-                          <span className="block text-xs text-slate-500 leading-tight mt-0.5">{opt.hint}</span>
+                          <span className="block text-[0.68rem] text-slate-500 leading-snug mt-0.5">{opt.hint}</span>
                         )}
                       </span>
                     </button>
@@ -277,53 +440,55 @@ function CompanionPanel({
 
             <button
               onClick={onRetake}
-              className="text-xs font-mono uppercase tracking-wide text-slate-500 hover:text-amber-400 transition-colors"
+              className="text-[0.65rem] font-mono uppercase tracking-[0.12em] text-slate-500 hover:text-amber-400 transition-colors"
             >
-              Capture again
+              ↻ Capture again
             </button>
           </>
         )}
 
+        {/* Chat messages */}
         {messages.length > 0 && (
-          <div className="space-y-2 pt-1">
+          <div className="space-y-3 pt-1">
             {messages.map((m, i) => (
-              <div key={i} className={m.role === "user" ? "flex flex-col items-end" : "flex flex-col items-start"}>
-                <span className="font-mono text-xs tracking-widest text-slate-600 mb-0.5">
+              <div key={i} className={"loupe-msg-bubble " + (m.role === "user" ? "flex flex-col items-end" : "flex flex-col items-start")}
+                   style={{ animationDelay: `${i * 0.05}s` }}>
+                {/* Role label */}
+                <span className={"font-mono text-[0.6rem] tracking-[0.18em] mb-1 " +
+                  (m.role === "user" ? "text-amber-500/70" : "text-slate-500")}>
                   {m.role === "user" ? "YOU" : "LOUPE"}
                 </span>
-                <div
-                  className={
-                    "max-w-[92%] rounded-md px-3 py-2 text-sm whitespace-pre-wrap " +
-                    (m.role === "user"
-                      ? "bg-amber-400/10 border border-amber-400/30 text-amber-100"
-                      : "bg-slate-800/70 border border-slate-700 text-slate-100")
-                  }
-                >
-                  {m.text}
-                </div>
+
+                {m.role === "user" ? (
+                  /* User bubble — simple text */
+                  <div className="max-w-[88%] rounded-lg rounded-tr-sm px-3 py-2 text-[0.8rem] bg-amber-400/8 border border-amber-400/20 text-amber-100">
+                    {m.text}
+                  </div>
+                ) : (
+                  /* Loupe bubble — rendered markdown */
+                  <div className="w-full rounded-lg rounded-tl-sm px-3 py-2.5 bg-slate-800/40 border border-slate-700/50"
+                       style={{ background: "linear-gradient(135deg, rgba(30,41,59,0.5) 0%, rgba(15,23,42,0.6) 100%)" }}>
+                    <RenderedMarkdown text={m.text} />
+                  </div>
+                )}
               </div>
             ))}
-            {busy && (
-              <div className="flex items-center gap-2 text-slate-400 text-sm font-mono">
-                <Loader2 size={14} className="animate-spin" />
-                Writing the explainer…
-              </div>
-            )}
+            {busy && <TypingIndicator />}
             <div ref={chatEndRef} />
           </div>
         )}
       </div>
 
       {/* input bar */}
-      <div className="border-t border-slate-800 p-2 shrink-0">
+      <div className="border-t border-slate-800/70 px-3 py-2.5 shrink-0" style={{ background: "rgba(10,15,28,0.9)" }}>
         <div className="flex items-end gap-1.5">
           {!hasSession ? (
             <button
               onClick={onCapture}
               disabled={busy || stage === "capturing" || stage === "analyzing" || !hasApiKey}
-              className="flex items-center gap-1.5 rounded-md bg-amber-400 hover:bg-amber-300 text-slate-950 font-medium text-sm px-3 py-2 transition-colors disabled:opacity-50 shrink-0"
+              className="flex items-center gap-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-semibold text-xs px-3 py-2 transition-all disabled:opacity-40 shrink-0 shadow-lg shadow-amber-400/10"
             >
-              <Camera size={15} />
+              <Camera size={14} />
               Capture screen
             </button>
           ) : null}
@@ -339,13 +504,13 @@ function CompanionPanel({
             }}
             placeholder={
               !hasSession
-                ? "Optional — tell Loupe what to focus on before capturing"
+                ? "Tell Loupe what to focus on…"
                 : options.length > 0
                 ? "Or type what you want explained…"
                 : "Ask a follow-up…"
             }
             rows={1}
-            className="flex-1 resize-none rounded-md bg-slate-900 border border-slate-800 focus:border-amber-400/60 focus:outline-none text-sm text-slate-100 placeholder-slate-500 px-2.5 py-2 max-h-20"
+            className="flex-1 resize-none rounded-lg bg-slate-900/70 border border-slate-800/70 focus:border-amber-400/50 focus:outline-none text-xs text-slate-100 placeholder-slate-600 px-3 py-2 max-h-20 transition-colors"
           />
 
           <button
@@ -353,9 +518,9 @@ function CompanionPanel({
             disabled={busy || !promptText.trim() || !hasApiKey}
             aria-label="Send"
             title="Send"
-            className="p-2 rounded-md text-slate-950 bg-slate-200 hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0"
+            className="p-2 rounded-lg text-slate-950 bg-amber-400 hover:bg-amber-300 disabled:opacity-20 disabled:cursor-not-allowed transition-all shrink-0 shadow-lg shadow-amber-400/10"
           >
-            <Send size={15} />
+            <Send size={13} />
           </button>
         </div>
       </div>
@@ -372,7 +537,7 @@ export function ApiKeyBar({ apiKey, setApiKey, modelId, setModelId }) {
   const looksLikeApiKey = /^AIza/.test(draft.trim());
 
   return (
-    <div className="rounded-md border border-slate-800 bg-slate-900/60 p-3">
+    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm">
           <KeyRound size={15} className={saved ? "text-amber-400" : "text-slate-500"} />
@@ -460,7 +625,7 @@ export default function LoupeApp() {
   const [messages, setMessages] = useState([]);
   const [promptText, setPromptText] = useState("");
 
-  const apiMessagesRef = useRef([]);
+  const apiMessagesRef = useRef([]); // Gemini-format history ({role, parts}) for the current screenshot session
   const chatEndRef = useRef(null);
   const pipContainerRef = useRef(null);
 
@@ -484,7 +649,7 @@ export default function LoupeApp() {
         targetDoc.head.appendChild(node.cloneNode(true));
       });
     } catch (_) {
-      /* non-fatal */
+      /* non-fatal: PiP window keeps working, just less styled */
     }
   };
 
@@ -494,10 +659,10 @@ export default function LoupeApp() {
       return;
     }
     try {
-      const pip = await window.documentPictureInPicture.requestWindow({ width: 400, height: 620 });
+      const pip = await window.documentPictureInPicture.requestWindow({ width: 420, height: 650 });
       cloneStylesInto(pip.document);
       pip.document.body.style.margin = "0";
-      pip.document.body.style.background = "#0b1220";
+      pip.document.body.style.background = "#0a0f1c";
       pip.document.title = "Loupe";
 
       const container = pip.document.createElement("div");
@@ -578,6 +743,7 @@ export default function LoupeApp() {
       );
       setStage("idle");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey]);
 
   const analyzeScreenshot = useCallback(
@@ -736,8 +902,8 @@ export default function LoupeApp() {
         <div className="flex justify-center">
           {pipWindow ? (
             <div
-              className="w-96 rounded-lg border border-slate-800 bg-slate-900/60 flex flex-col items-center justify-center text-center gap-3 p-8"
-              style={{ height: 560 }}
+              className="w-96 rounded-xl border border-slate-800 bg-slate-900/60 flex flex-col items-center justify-center text-center gap-3 p-8"
+              style={{ height: 580 }}
             >
               <div className="w-10 h-10 rounded-full border border-amber-400/50 flex items-center justify-center text-amber-400">
                 <Crosshair size={18} />
@@ -751,7 +917,7 @@ export default function LoupeApp() {
               </button>
             </div>
           ) : (
-            <div className="w-96 rounded-lg border border-slate-800 overflow-hidden shadow-2xl" style={{ height: 560 }}>
+            <div className="w-96 rounded-xl border border-slate-800/80 overflow-hidden shadow-2xl shadow-black/40" style={{ height: 580 }}>
               <CompanionPanel isPiP={false} {...panelProps} />
             </div>
           )}
